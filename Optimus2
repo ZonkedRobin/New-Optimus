@@ -1,0 +1,379 @@
+import ccxt
+import pandas as pd
+from datetime import datetime, timedelta
+
+# create an instance of the Exchange class
+exchange = ccxt.Exchange({
+    'rateLimit': 1000,  # limit the number of requests
+    'enableRateLimit': True,  # enable the rate limiter
+})
+
+# set the API keys
+exchange.apiKey = 'YOUR_API_KEY'
+exchange.secret = 'YOUR_SECRET_KEY'
+
+
+# set up initial variables
+symbol = 'BTC/USDT:USDT'
+leverage = 100
+initial_investment = 1
+long_margin_name = 'long margin'
+short_margin_name = 'short margin'
+long_grid_size = 200
+short_grid_size = 200
+sell_order_range = 0.2
+margin_split = 0.5
+grid_split = 0.75
+profit_margin_names = ['long margin', 'short margin', 'optimus profit margin']
+savings_wallet = 'YOUR_SAVINGS_WALLET_ADDRESS'
+checking_wallet = 'YOUR_CHECKING_WALLET_ADDRESS'
+withdraw_time = datetime.now().replace(hour=5, minute=0, second=0, microsecond=0)
+
+# set up initial margin positions and buy in prices
+long_margin_pos = initial_investment * margin_split
+short_margin_pos = initial_investment * margin_split
+long_buy_price = exchange.fetch_ticker(symbol)['last']
+short_sell_price = long_buy_price
+
+# set up grid arrays for both margins
+long_grid = []
+short_grid = []
+for i in range(long_grid_size):
+    long_grid.append(long_buy_price + (i * (sell_order_range / long_grid_size)))
+for i in range(short_grid_size):
+    short_grid.append(short_sell_price - (i * (sell_order_range / short_grid_size)))
+
+# set up loop for margin trading
+while True:
+    # check for new buy in price
+    new_buy_price = exchange.fetch_ticker(symbol)['last']
+    if new_buy_price != long_buy_price:
+        # distribute long margin
+        long_margin_pos *= grid_split
+        long_grid = []
+        for i in range(long_grid_size):
+            long_grid.append(new_buy_price + (i * (sell_order_range / long_grid_size)))
+        
+        # reset long margin position and buy in price
+        long_margin_pos *= margin_split
+        long_buy_price = new_buy_price
+    
+    if new_buy_price != short_sell_price:
+        # distribute short margin
+        short_margin_pos *= grid_split
+        short_grid = []
+        for i in range(short_grid_size):
+            short_grid.append(new_buy_price - (i * (sell_order_range / short_grid_size)))
+        
+        # reset short margin position and buy in price
+        short_margin_pos *= margin_split
+        short_sell_price = new_buy_price
+    
+    # check if active margin has hit stop loss
+    if long_margin_pos == 0:
+        # redistribute long margin into new spot grid
+        long_margin_pos = initial_investment * margin_split
+        long_buy_price = short_sell_price
+        long_grid = []
+        for i in range(long_grid_size):
+            long_grid.append(long_buy_price + (i * (sell_order_range / long_grid_size)))
+    elif short_margin_pos == 0:
+        # redistribute short margin into new spot grid
+        short_margin_pos = initial_investment * margin_split
+        short_sell_price = long_buy_price
+        short_grid = []
+        for i in range(short_grid_size):
+            short_grid.append(short_sell_price - (i * (sell_order_price_long - buy_in_price_long) / (long_grid_size - 1)))
+# loop through margin grids until both margins are fully liquidated
+while long_margin_pos > 0 or short_margin_pos > 0:
+    
+    if long_margin_pos > 0:
+        # if active margin is long, distribute margin into long grid
+        active_margin_pos = long_margin_pos
+        active_grid = long_grid
+        active_grid_size = long_grid_size
+        inactive_margin_pos = short_margin_pos
+        inactive_grid = short_grid
+        inactive_grid_size = short_grid_size
+        stop_loss = buy_in_price_long
+        starting_price = sell_order_price_short
+        side = "buy"
+        active_margin = "long"
+    else:
+        # if active margin is short, distribute margin into short grid
+        active_margin_pos = short_margin_pos
+        active_grid = short_grid
+        active_grid_size = short_grid_size
+        inactive_margin_pos = long_margin_pos
+        inactive_grid = long_grid
+        inactive_grid_size = long_grid_size
+        stop_loss = sell_order_price_short
+        starting_price = buy_in_price_long
+        side = "sell"
+        active_margin = "short"
+
+    # distribute margin into active grid
+    for i in range(active_grid_size):
+        if active_margin_pos > 0:
+            order_price = starting_price + (i * (sell_order_price_long - buy_in_price_long) / (active_grid_size - 1))
+            order_size = 0.75 * active_margin_pos / active_grid_size
+            order = make_order(symbol="BTC/USDT:USDT", side=side, price=order_price, quantity=order_size, leverage=100)
+            active_margin_pos -= order_size
+            active_grid[i] = order_price
+            print(f"Placing order {order} in {active_margin} margin grid at {order_price}")
+
+    # check if active margin has hit stop loss
+    if get_last_price(symbol="BTC/USDT:USDT") <= stop_loss:
+        print(f"{active_margin} margin has hit stop loss at {stop_loss}")
+        # redistribute active margin into new spot grid
+        inactive_margin_pos += active_margin_pos
+        active_margin_pos = 0
+        active_grid = []
+        for i in range(inactive_grid_size):
+            active_grid.append(starting_price + (i * (sell_order_price_long - buy_in_price_long) / (inactive_grid_size - 1)))
+        buy_in_price_long = active_grid[-1]
+
+    # check if there are any sell orders filled in either margin
+    if len(get_filled_orders(symbol="BTC/USDT:USDT")) > 0:
+        filled_orders = get_filled_orders(symbol="BTC/USDT:USDT")
+        for order in filled_orders:
+            if order["side"] == "buy":
+                print(f"Long margin buy order {order} has filled at {order['price']}")
+                long_margin_pos += 0.5 * order["quantity"] * order["price"]
+                short_margin_pos += 0.5 * order["quantity"] * order["price"]
+                long_grid, short_grid, buy_in_price_long, sell_order_price_short = distribute_margin(
+                    long_margin_pos, short_margin_pos, initial_investment, margin_split, long_grid_size, short_grid_size, 
+                    buy_in_price_long, sell_order_price_short, long_buy_price, short_sell_price)
+            else:
+                print(f"Short margin sell order {order} has filled at {order['price']}")
+                long_margin_pos += 0.5 * order["quantity"] * sell_order_price_short
+                short_margin_pos += 0.
+if long_margin_pos >= 1.25 * initial_investment:
+# withdraw profits to wallets if connected
+    if checking_wallet is not None and savings_wallet is not None:
+        profit_to_withdraw = 0.5 * (long_margin_pos + short_margin_pos) - 2.5 * initial_investment
+profit_to_withdraw_checking = 0.9 * profit_to_withdraw
+profit_to_withdraw_savings = 0.1 * profit_to_withdraw
+checking_wallet.transfer_to(profit_margin, profit_to_withdraw_checking)
+savings_wallet.transfer_to(profit_margin, profit_to_withdraw_savings)
+# redistribute profits into third margin if balance < 250
+
+if optimus_profit_margin_pos < 250:
+    optimus_profit_margin_pos += 0.5 * (long_margin_pos + short_margin_pos)
+    long_margin_pos -= 0.25 * (long_margin_pos + short_margin_pos)
+    short_margin_pos -= 0.25 * (long_margin_pos + short_margin_pos)
+
+else:
+# redistribute profits evenly between long and short margins
+    long_margin_pos += 0.25 * (long_margin_pos + short_margin_pos)
+    short_margin_pos += 0.25 * (long_margin_pos + short_margin_pos)
+    print(f"Profits from sell order {order} have been distributed")
+# check for stop loss and redistribute margin if necessary
+if active_margin == "long" and long_buy_price - stop_loss >= latest_price:
+    # redistribute long margin into new spot grid
+            long_margin_pos = initial_investment * margin_split
+            long_buy_price = latest_price
+            long_grid = []
+for i in range(long_grid_size):
+            long_grid.append(long_buy_price + (i * (buy_order_spacing * long_buy_price)))
+    # redistribute 75% of margin into new grid
+if active_margin == "long" and long_sell_price - stop_loss >= latest_price:
+    # redistribute long margin into new spot grid
+    long_margin_pos *= 0.75
+    inactive_margin_pos = short_margin_pos
+    active_margin = "short"
+    print(f"Long margin has hit stop loss and has been redistributed into a new spot grid")
+
+elif active_margin == "short" and short_buy_price + stop_loss <= latest_price:
+    # redistribute short margin into new spot grid
+    short_margin_pos = initial_investment * margin_split
+    short_buy_price = latest_price
+    short_grid = []
+    for i in range(short_grid_size):
+        short_grid.append(short_buy_price - (i * (sell_order_spacing * short_buy_price)))
+
+    # redistribute 75% of margin into new grid
+    short_margin_pos *= 0.75
+    inactive_margin_pos = long_margin_pos
+    active_margin = "long"
+    print(f"Short margin has hit stop loss and has been redistributed into a new spot grid")
+    # redistribute 75% of margin into new grid
+    short_margin_pos *= 0.75
+    inactive_margin_pos = long_margin_pos
+    active_margin = "long"
+    print(f"Short margin has hit stop loss and has been redistributed into a new spot grid")
+     # create new spot grids at new buy-in price
+    long_grid = []
+    short_grid = []
+    for i in range(grid_size):
+                long_grid.append(buy_in_price)
+                short_grid.append(buy_in_price)
+
+    # update long and short margin positions
+                long_margin_pos = inactive_margin_pos * 0.75
+                short_margin_pos = inactive_margin_pos * 0.75
+
+    # update margin buy-in price and stop loss price
+                long_buy_price = buy_in_price
+                long_stop_loss_price = buy_in_price * 0.8
+                short_sell_price = buy_in_price
+                short_stop_loss_price = buy_in_price * 1.2
+
+    # update active margin
+                active_margin = "long"
+
+    # calculate profits and distribute to margins
+                profit = long_margin_pos + short_margin_pos - initial_investment
+                if profit > 0:
+        # distribute 50% of profits to each margin
+                    long_margin_pos += profit * 0.5
+                    short_margin_pos += profit * 0.5
+
+        # if total margin positions exceed 250, distribute profits to optimus profit margin
+                if long_margin_pos + short_margin_pos > 250:
+                    optimus_profit_margin_pos += profit * 0.5
+                    long_margin_pos -= profit * 0.25
+                    short_margin_pos -= profit * 0.25
+
+            # distribute 50% of profits from all sell orders to long and short margins
+                    long_margin_pos += sell_order_profits * 0.5
+                    short_margin_pos += sell_order_profits * 0.5
+
+            # distribute 50% of profits from all sell orders to profit margin
+                    optimus_profit_margin_pos += sell_order_profits * 0.5
+
+            # check if connected to savings and checking wallets
+if savings_wallet is not None and checking_wallet is not None:
+    # withdraw 10% of all profits to savings wallet and 90% to checking wallet at 5am local time
+    if datetime.now().strftime('%H:%M:%S') == '05:00:00':
+        withdraw_amount = sell_order_profits * 0.1
+        checking_wallet.deposit(withdraw_amount * 0.9)
+        savings_wallet.deposit(withdraw_amount * 0.1)
+    else:
+        # hold profits in profit margin if no wallets are connected
+        optimus_profit_margin_pos += sell_order_profits
+else:
+    # hold profits in profit margin if no wallets are connected
+    optimus_profit_margin_pos += sell_order_profits
+
+
+# distribute profits to connected wallets
+if savings_wallet and checking_wallet:
+    savings_amount = 0.1 * sell_order_profits
+    checking_amount = 0.9 * sell_order_profits
+    if datetime.now().time() >= time(5, 0, 0):
+        # withdraw profits to connected wallets
+        print(f"Withdrawing {savings_amount} USDT to savings wallet...")
+        savings_wallet.withdraw(savings_amount)
+        print(f"Withdrawing {checking_amount} USDT to checking wallet...")
+        checking_wallet.withdraw(checking_amount)
+    else:
+        print(f"Not yet time to withdraw profits")
+else:
+    print("No wallets connected, profits will be held in the profit margin")
+
+# distribute profits to long and short margins
+long_margin_pos += 0.5 * sell_order_profits
+short_margin_pos += 0.5 * sell_order_profits
+
+# check if total margin in long or short margin has reached 250 USDT
+if long_margin_pos >= 250:
+    # distribute 50% of profits from all sell orders to optimus profit margin
+    optimus_profit_margin_pos += 0.5 * (long_margin_pos - 250)
+    long_margin_pos = 250
+if short_margin_pos >= 250:
+    # distribute 50% of profits from all sell orders to optimus profit margin
+    optimus_profit_margin_pos += 0.5 * (short_margin_pos - 250)
+    short_margin_pos = 250
+
+
+    # check if optimus profit margin has reached 1000 USDT
+    if optimus_profit_margin_pos >= 1000:
+        # exchange 50% of profits from all sell orders to optimus profit margin
+            optimus_profit_margin_pos -= 0.5 * optimus_profit_margin_pos
+    long_margin_pos += 0.25 * optimus_profit_margin_pos
+    short_margin_pos += 0.25 * optimus_profit_margin_pos
+    print(f"Exchanged 50% of profits from all sell orders to optimus profit margin")
+    if optimus_profit_margin_pos >= 1000:
+    # exchange 50% of profits from all sell orders to optimus profit margin
+            optimus_profit_margin_pos -= 0.5 * optimus_profit_margin_pos
+            long_margin_pos += 0.25 * optimus_profit_margin_pos
+            short_margin_pos += 0.25 * optimus_profit_margin_pos
+    print(f"Exchanged 50% of profits from all sell orders to optimus profit margin")
+
+if connected_wallets:
+    savings_wallet = connected_wallets.get("savings")
+    checking_wallet = connected_wallets.get("checking")
+
+    if savings_wallet and checking_wallet:
+        # withdraw 10% of all profits to savings and 90% to checking every day at 5am local time
+        now = datetime.now()
+        current_time = now.strftime("%H:%M:%S")
+
+        if current_time == "05:00:00":
+            savings_withdrawal = 0.1 * optimus_profit_margin_pos
+            checking_withdrawal = 0.9 * optimus_profit_margin_pos
+
+            if savings_wallet.balance >= savings_withdrawal:
+                savings_wallet.balance -= savings_withdrawal
+                optimus_profit_margin_pos -= savings_withdrawal
+                print(f"Withdrew {savings_withdrawal} from optimus profit margin to savings wallet")
+
+            if checking_wallet.balance >= checking_withdrawal:
+                checking_wallet.balance -= checking_withdrawal
+                optimus_profit_margin_pos -= checking_withdrawal
+                print(f"Withdrew {checking_withdrawal} from optimus profit margin to checking wallet")
+    else:
+        # hold profits in profit margin if one or more wallets are missing
+        print("One or more wallets are missing. Holding profits in optimus profit margin")
+if savings_wallet and checking_wallet:
+    savings_amount = 0.1 * sell_order_profits
+    checking_amount = 0.9 * sell_order_profits
+    if datetime.now().time() >= time(5, 0, 0):
+        # withdraw profits to connected wallets
+        print(f"Withdrawing {savings_amount} USDT to savings wallet...")
+        savings_wallet.withdraw(savings_amount)
+        print(f"Withdrawing {checking_amount} USDT to checking wallet...")
+        checking_wallet.withdraw(checking_amount)
+    else:
+        print(f"Not yet time to withdraw profits")
+else:
+    print("No wallets connected, profits will be held in the profit margin")
+
+# distribute profits to long and short margins
+long_margin_pos += 0.5 * sell_order_profits
+short_margin_pos += 0.5 * sell_order_profits
+
+# check if total margin in long or short margin has reached 250 USDT
+if long_margin_pos >= 250:
+    # distribute 50% of profits from all sell orders to optimus profit margin
+    optimus_profit_margin_pos += 0.5 * (long_margin_pos - 250)
+    long_margin_pos = 250
+if short_margin_pos >= 250:
+    # distribute 50% of profits from all sell orders to optimus profit margin
+    optimus_profit_margin_pos += 0.5 * (short_margin_pos - 250)
+    short_margin_pos = 250
+
+if optimus_profit_margin_pos >= 1000:
+    # exchange 50% of profits from all sell orders to optimus profit margin
+    optimus_profit_margin_pos -= 0.5 * optimus_profit_margin_pos
+    long_margin_pos += 0.25 * optimus_profit_margin_pos
+    short_margin_pos += 0.25 * optimus_profit_margin_pos
+    print(f"Exchanged 50% of profits from all sell orders to optimus profit margin")
+
+if savings_wallet is not None and checking_wallet is not None:
+    # check if it's time to withdraw profits
+    now = datetime.datetime.now()
+    if now.hour == 5 and now.minute == 0:
+        # withdraw 10% of profits to savings and 90% to checking
+        savings_amount = 0.1 * optimus_profit_margin_pos
+        checking_amount = 0.9 * optimus_profit_margin_pos
+        savings_wallet.deposit(savings_amount)
+        checking_wallet.deposit(checking_amount)
+        print(f"Withdrew {savings_amount} to savings wallet and {checking_amount} to checking wallet at 5am")
+    else:
+        print("Not yet time to withdraw profits")    
+else:
+    print("No wallets are connected. Holding profits in optimus profit margin")
+
+print("Trading bot has finished")
